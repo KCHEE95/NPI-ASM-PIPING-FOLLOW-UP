@@ -166,7 +166,7 @@ def import_excel_data(uploaded_file):
     df = df_raw[list(existing_cols.keys())].rename(columns=existing_cols)
     for col in ['part_num', 'revision', 'cust_part_num']:
         if col in df.columns:
-            df[col] = df[col].fillna(method='ffill')
+            df[col] = df[col].ffill()
     df = df.dropna(subset=['job_num'])
     df = df[df['job_num'] != 'No Job']
     date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date', 'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
