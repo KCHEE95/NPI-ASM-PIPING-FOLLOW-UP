@@ -166,13 +166,15 @@ def import_excel_data(uploaded_file):
     df = df_raw[list(existing_cols.keys())].rename(columns=existing_cols)
     for col in ['part_num', 'revision', 'cust_part_num']:
         if col in df.columns:
-            df[col] = df[col].ffill()
+            df[col] = df[col].ffill()  # 修复 fillna method
     df = df.dropna(subset=['job_num'])
     df = df[df['job_num'] != 'No Job']
     date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date', 'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
     for col in date_cols:
         if col in df.columns:
+            # 转为 date 对象后再转为 ISO 字符串
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+            df[col] = df[col].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
     numeric_cols = ['po_qty', 'balance_qty']
     for col in numeric_cols:
         if col in df.columns:
@@ -185,7 +187,12 @@ def import_excel_data(uploaded_file):
         df['production_status'] = 'Not Started'
     for _, row in df.iterrows():
         data = row.to_dict()
+        # 移除 NaN 值
         data = {k: (None if pd.isna(v) else v) for k, v in data.items()}
+        # 确保所有日期字段已经是字符串，但以防万一再转换一次
+        for key, value in data.items():
+            if isinstance(value, (pd.Timestamp, datetime.date)):
+                data[key] = value.isoformat()
         supabase.table('jobs').upsert(data, on_conflict='job_num').execute()
     st.success("Excel 数据导入/更新成功！")
     st.rerun()
