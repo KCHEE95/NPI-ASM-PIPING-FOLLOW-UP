@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from supabase import create_client, Client
-from datetime import datetime, date   # 确保有 date
+from datetime import datetime, date   # 直接导入 datetime 和 date 类
 import plotly.express as px
 import io
 import json
@@ -105,11 +105,6 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# ---------------------------- 数据库表初始化 SQL (仅作参考，已在 Supabase 执行过) ----------------------------
-# 实际使用时确保 Supabase 中已手动创建了 jobs, materials, material_allocations, material_usage_log 表
-# 若没有，可执行下方代码块（首次部署可取消注释，之后注释掉）
-# 此处省略建表 SQL 因为已在 Supabase 控制台执行过，避免重复执行
-
 # ---------------------------- 数据加载与处理 ----------------------------
 @st.cache_data(ttl=300)
 def load_jobs():
@@ -170,26 +165,22 @@ def import_excel_data(uploaded_file):
         if col in df.columns:
             df[col] = df[col].ffill()
     
-    # 删除无效行
     df = df.dropna(subset=['job_num'])
     df = df[df['job_num'] != 'No Job']
     
     # 日期列统一转为字符串 (ISO 格式)
-    date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date', 
+    date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date',
                  'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
     for col in date_cols:
         if col in df.columns:
-            # 先转为 datetime，再转为 date，最后转为 isoformat 字符串
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
             df[col] = df[col].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
     
-    # 数值列
     numeric_cols = ['po_qty', 'balance_qty']
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # 获取现有生产状态
     existing_jobs = load_jobs()
     if not existing_jobs.empty:
         status_dict = dict(zip(existing_jobs['job_num'], existing_jobs['production_status']))
@@ -197,16 +188,14 @@ def import_excel_data(uploaded_file):
     else:
         df['production_status'] = 'Not Started'
     
-    # 逐行 upsert，确保所有值可 JSON 序列化
     for _, row in df.iterrows():
         data = row.to_dict()
-        # 处理 NaN
         data = {k: (None if pd.isna(v) else v) for k, v in data.items()}
-        # 强制转换任何残留的 date/datetime 对象
+        # 确保所有日期对象转为字符串
         for key, value in data.items():
-            if isinstance(value, (pd.Timestamp, datetime.date, datetime.datetime)):
+            if isinstance(value, (pd.Timestamp, date, datetime)):
                 data[key] = value.isoformat()
-            elif isinstance(value, (np.generic,)):  # numpy 类型转 python 原生
+            elif isinstance(value, np.generic):
                 data[key] = value.item()
         supabase.table('jobs').upsert(data, on_conflict='job_num').execute()
     
@@ -280,7 +269,8 @@ def consume_material(material_code, job_num, quantity_used, usage_date, remarks=
     supabase.table('materials').update({'used_quantity': new_total_used, 'remaining_quantity': new_remaining_mat}).eq('material_code', material_code).execute()
     supabase.table('material_usage_log').insert({
         'material_code': material_code, 'job_num': job_num, 'quantity_used': quantity_used,
-        'usage_date': usage_date, 'remarks': remarks
+        'usage_date': usage_date.isoformat() if isinstance(usage_date, (date, datetime)) else usage_date,
+        'remarks': remarks
     }).execute()
     return True
 
