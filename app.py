@@ -164,36 +164,52 @@ def import_excel_data(uploaded_file):
     }
     existing_cols = {k: v for k, v in col_map.items() if k in df_raw.columns}
     df = df_raw[list(existing_cols.keys())].rename(columns=existing_cols)
+    
+    # 前向填充合并单元格
     for col in ['part_num', 'revision', 'cust_part_num']:
         if col in df.columns:
-            df[col] = df[col].ffill()  # 修复 fillna method
+            df[col] = df[col].ffill()
+    
+    # 删除无效行
     df = df.dropna(subset=['job_num'])
     df = df[df['job_num'] != 'No Job']
-    date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date', 'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
+    
+    # 日期列统一转为字符串 (ISO 格式)
+    date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date', 
+                 'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
     for col in date_cols:
         if col in df.columns:
-            # 转为 date 对象后再转为 ISO 字符串
+            # 先转为 datetime，再转为 date，最后转为 isoformat 字符串
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
             df[col] = df[col].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
+    
+    # 数值列
     numeric_cols = ['po_qty', 'balance_qty']
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # 获取现有生产状态
     existing_jobs = load_jobs()
     if not existing_jobs.empty:
         status_dict = dict(zip(existing_jobs['job_num'], existing_jobs['production_status']))
         df['production_status'] = df['job_num'].map(status_dict).fillna('Not Started')
     else:
         df['production_status'] = 'Not Started'
+    
+    # 逐行 upsert，确保所有值可 JSON 序列化
     for _, row in df.iterrows():
         data = row.to_dict()
-        # 移除 NaN 值
+        # 处理 NaN
         data = {k: (None if pd.isna(v) else v) for k, v in data.items()}
-        # 确保所有日期字段已经是字符串，但以防万一再转换一次
+        # 强制转换任何残留的 date/datetime 对象
         for key, value in data.items():
-            if isinstance(value, (pd.Timestamp, datetime.date)):
+            if isinstance(value, (pd.Timestamp, datetime.date, datetime.datetime)):
                 data[key] = value.isoformat()
+            elif isinstance(value, (np.generic,)):  # numpy 类型转 python 原生
+                data[key] = value.item()
         supabase.table('jobs').upsert(data, on_conflict='job_num').execute()
+    
     st.success("Excel 数据导入/更新成功！")
     st.rerun()
 
