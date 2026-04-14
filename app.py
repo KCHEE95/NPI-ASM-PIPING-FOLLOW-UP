@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from supabase import create_client, Client
-from datetime import datetime
+from datetime import datetime, date   # 确保有 date
 import plotly.express as px
 import io
 import json
