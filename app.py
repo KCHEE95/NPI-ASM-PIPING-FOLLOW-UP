@@ -63,6 +63,23 @@ st.markdown("""
     }
     .metric-card h3 { margin: 0; font-size: 2rem; font-weight: 700; color: #1e293b; }
     .metric-card p { margin: 0; color: #64748b; font-size: 0.9rem; }
+    /* Job card style */
+    .job-card {
+        background: white;
+        border-radius: 20px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border: 1px solid #eef2f6;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+    }
+    .step-badge {
+        display: inline-block;
+        background-color: #e2e8f0;
+        border-radius: 40px;
+        padding: 0.2rem 0.8rem;
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,12 +92,47 @@ def init_supabase():
 
 supabase = init_supabase()
 
+# ---------------------------- Workflow steps definition ----------------------------
+WORKFLOW_STEPS = [
+    "Laser Cut",      # Phase 1
+    "Laser Tube",     # Phase 1
+    "Machining",      # Phase 1
+    "Bending",        # Phase 1
+    "Welding",        # Phase 2
+    "Touch Up",       # Phase 3
+    "CMM",            # Phase 3
+    "Leak Test",      # Phase 4
+    "Masking",        # Phase 4
+    "Sandblast"       # Phase 4
+]
+
+PHASE_NAMES = {
+    1: "Phase 1: Cutting & Forming",
+    2: "Phase 2: Welding",
+    3: "Phase 3: Finishing",
+    4: "Phase 4: Testing & Coating"
+}
+
+def get_step_phase(step):
+    if step in WORKFLOW_STEPS[:4]:
+        return 1
+    elif step == "Welding":
+        return 2
+    elif step in WORKFLOW_STEPS[5:7]:
+        return 3
+    else:
+        return 4
+
 # ---------------------------- Data loading functions ----------------------------
 @st.cache_data(ttl=300)
 def load_jobs():
     try:
         response = supabase.table('jobs').select('*').order('need_by_date').execute()
-        return pd.DataFrame(response.data)
+        df = pd.DataFrame(response.data)
+        # Ensure current_step column exists
+        if 'current_step' not in df.columns:
+            df['current_step'] = 'Laser Cut'
+        return df
     except Exception as e:
         st.error(f"Failed to load jobs: {e}")
         return pd.DataFrame()
@@ -115,7 +167,6 @@ def load_usage_log():
 
 @st.cache_data(ttl=300)
 def load_part_images():
-    """Return dict {part_num: image_url}"""
     try:
         response = supabase.table('part_images').select('part_num, image_url').execute()
         df = pd.DataFrame(response.data)
@@ -126,8 +177,8 @@ def load_part_images():
         st.error(f"Failed to load part images: {e}")
         return {}
 
+# ---------------------------- Business logic functions ----------------------------
 def import_excel_data(uploaded_file):
-    """Parse uploaded Excel and import into jobs table"""
     df_raw = pd.read_excel(uploaded_file, sheet_name="JobStatusByCust", header=3)
     df_raw.columns = df_raw.columns.str.strip()
     col_map = {
@@ -161,8 +212,11 @@ def import_excel_data(uploaded_file):
     if not existing_jobs.empty:
         status_dict = dict(zip(existing_jobs['job_num'], existing_jobs['production_status']))
         df['production_status'] = df['job_num'].map(status_dict).fillna('Not Started')
+        step_dict = dict(zip(existing_jobs['job_num'], existing_jobs.get('current_step', 'Laser Cut')))
+        df['current_step'] = df['job_num'].map(step_dict).fillna('Laser Cut')
     else:
         df['production_status'] = 'Not Started'
+        df['current_step'] = 'Laser Cut'
     for _, row in df.iterrows():
         data = row.to_dict()
         data = {k: (None if pd.isna(v) else v) for k, v in data.items()}
@@ -177,6 +231,9 @@ def import_excel_data(uploaded_file):
 
 def update_job_status(job_num, new_status):
     supabase.table('jobs').update({'production_status': new_status, 'last_updated': datetime.now().isoformat()}).eq('job_num', job_num).execute()
+
+def update_job_step(job_num, new_step):
+    supabase.table('jobs').update({'current_step': new_step, 'last_updated': datetime.now().isoformat()}).eq('job_num', job_num).execute()
 
 def add_material(material_code, total_qty, safety_stock=0, unit='pcs'):
     existing = supabase.table('materials').select('material_code').eq('material_code', material_code).execute()
@@ -248,19 +305,14 @@ def consume_material(material_code, job_num, quantity_used, usage_date, remarks=
     return True
 
 def upload_part_image(part_num, image_file):
-    """Upload image to Supabase Storage and save URL to part_images table"""
     if not image_file:
         return False
-    # Generate unique file name
     ext = image_file.name.split('.')[-1]
     file_path = f"{part_num}_{datetime.now().timestamp()}.{ext}"
-    # Upload to bucket 'part-images'
     try:
         res = supabase.storage.from_("part-images").upload(file_path, image_file.getvalue())
         if res:
-            # Get public URL
             public_url = supabase.storage.from_("part-images").get_public_url(file_path)
-            # Upsert into part_images table
             supabase.table('part_images').upsert({
                 'part_num': part_num,
                 'image_url': public_url,
@@ -280,14 +332,12 @@ def main():
     role = st.sidebar.selectbox("👤 Your Role", ["Sales (View Progress)", "Production (Update Status)", "Purchaser (Material Management)", "Admin (Full Access)"])
     st.sidebar.markdown("---")
 
-    # Admin functions
     if role == "Admin (Full Access)":
         with st.sidebar.expander("📤 Import Excel Data (Initial/Sync)"):
             uploaded_file = st.file_uploader("Upload JobStatus-test.xlsx", type=["xlsx"])
             if uploaded_file and st.button("Start Import/Update"):
                 import_excel_data(uploaded_file)
         with st.sidebar.expander("🖼️ Upload Part Images (Admin)"):
-            # Get unique part numbers from jobs
             df_jobs_temp = load_jobs()
             if not df_jobs_temp.empty:
                 part_nums = sorted(df_jobs_temp['part_num'].dropna().unique())
@@ -304,7 +354,6 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
-    # Load all data
     df_jobs = load_jobs()
     df_materials = load_materials()
     df_alloc = load_allocations()
@@ -330,39 +379,20 @@ def main():
     if df_jobs.empty:
         st.info("No job data available. Use Admin role to import Excel file.")
     else:
-        if role == "Production (Update Status)":
-            df_display = df_jobs[df_jobs['production_status'] != 'Completed'].copy()
-            st.subheader(f"🔧 Pending Production Tasks ({len(df_display)} items)")
-        else:
-            df_display = df_jobs.copy()
-
-        # Prepare display dataframe with image column
+        # Display summary table (with images)
+        df_display = df_jobs.copy()
         df_display['image_url'] = df_display['part_num'].map(part_images_dict).fillna("")
-        # Select columns: Job Num, Part Num, Customer Part Num, Exwork Date, PO Qty, Need By Date, Status, Production Status, Image
-        display_cols = ['job_num', 'part_num', 'cust_part_num', 'exwork_date', 'po_qty', 'need_by_date', 'status', 'production_status', 'image_url']
-        # Ensure columns exist
+        display_cols = ['job_num', 'part_num', 'cust_part_num', 'exwork_date', 'po_qty', 'need_by_date', 'status', 'production_status', 'current_step', 'image_url']
         for col in display_cols:
             if col not in df_display.columns:
                 df_display[col] = ""
         df_display = df_display[display_cols].rename(columns={
             'job_num': 'Job Number', 'part_num': 'Part Number', 'cust_part_num': 'Customer Part Number',
             'exwork_date': 'Exwork Date', 'po_qty': 'PO Qty', 'need_by_date': 'Need By Date',
-            'status': 'Order Status', 'production_status': 'Production Status', 'image_url': 'Image'
+            'status': 'Order Status', 'production_status': 'Production Status', 'current_step': 'Current Step', 'image_url': 'Image'
         })
-
-        # Color mapping for production status
-        def status_color(val):
-            if val == 'Completed':
-                return 'background-color: #9CCC65'
-            else:
-                return 'background-color: #FFCC80'
-
-        # Apply styling to the 'Production Status' column only
-        styled_df = df_display.style.map(status_color, subset=['Production Status'])
-
-        # Use column_config to display images
         column_config = {
-            "Image": st.column_config.ImageColumn("Part Image", help="Part photo", width="small"),
+            "Image": st.column_config.ImageColumn("Part Image", width="small"),
             "Job Number": st.column_config.TextColumn("Job Number"),
             "Part Number": st.column_config.TextColumn("Part Number"),
             "Customer Part Number": st.column_config.TextColumn("Customer Part Number"),
@@ -371,9 +401,48 @@ def main():
             "Need By Date": st.column_config.DateColumn("Need By Date"),
             "Order Status": st.column_config.TextColumn("Order Status"),
             "Production Status": st.column_config.TextColumn("Production Status"),
+            "Current Step": st.column_config.TextColumn("Current Step"),
         }
+        st.dataframe(df_display, column_config=column_config, use_container_width=True, height=400)
 
-        st.dataframe(styled_df, column_config=column_config, use_container_width=True, height=400)
+        # Workflow management (cards with update capability)
+        st.subheader("🔧 Workflow Management (Update Current Step)")
+        st.markdown("Click the **Update Step** button on any job card to change its current step.")
+
+        # Display jobs as cards in a grid
+        jobs_list = df_jobs.to_dict('records')
+        cols_per_row = 3
+        for i in range(0, len(jobs_list), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for idx, col in enumerate(cols):
+                if i + idx < len(jobs_list):
+                    job = jobs_list[i + idx]
+                    job_num = job['job_num']
+                    part_num = job['part_num']
+                    current_step = job.get('current_step', 'Laser Cut')
+                    phase = get_step_phase(current_step)
+                    with col:
+                        with st.container():
+                            st.markdown(f"""
+                            <div class="job-card">
+                                <b>{job_num}</b><br>
+                                <span style="font-size:0.9rem;">Part: {part_num}</span><br>
+                                <span class="step-badge">Phase {phase}</span> <span style="font-weight:500;">{current_step}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            # Use popover for step update
+                            with st.popover(f"✏️ Update Step for {job_num}"):
+                                st.markdown(f"**Job: {job_num}**")
+                                st.markdown(f"**Current step:** {current_step}")
+                                new_step = st.selectbox("Select new step", WORKFLOW_STEPS, index=WORKFLOW_STEPS.index(current_step), key=f"step_{job_num}")
+                                if st.button("Save", key=f"save_{job_num}"):
+                                    if new_step != current_step:
+                                        update_job_step(job_num, new_step)
+                                        st.success(f"Step updated to {new_step}")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    else:
+                                        st.info("No change.")
 
         # Production completion section
         if role in ["Production (Update Status)", "Admin (Full Access)"]:
