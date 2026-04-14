@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from supabase import create_client, Client
-from datetime import datetime, date   # 直接导入 datetime 和 date 类
+from datetime import datetime, date
 import plotly.express as px
 import io
 import json
@@ -14,20 +14,13 @@ st.set_page_config(page_title="NPI 生产进度与物料管理系统", layout="w
 # ---------------------------- 自定义 CSS (Bento Grid 风格) ----------------------------
 st.markdown("""
 <style>
-    /* 全局圆角与卡片效果 */
-    .stApp {
-        background-color: #f8fafc;
-    }
-    .main > div {
-        border-radius: 24px;
-    }
-    /* 侧边栏美化 */
+    .stApp { background-color: #f8fafc; }
+    .main > div { border-radius: 24px; }
     [data-testid="stSidebar"] {
         background-color: #ffffff;
         border-radius: 0 24px 24px 0;
         box-shadow: 4px 0 12px rgba(0,0,0,0.05);
     }
-    /* 卡片样式: 用于数据表格、图表等容器 */
     .stDataFrame, .stPlotlyChart, .stMarkdown, .stAlert, .stForm {
         background: white;
         border-radius: 20px;
@@ -36,7 +29,6 @@ st.markdown("""
         margin-bottom: 1rem;
         border: 1px solid #eef2f6;
     }
-    /* 按钮美化 */
     .stButton button {
         border-radius: 40px;
         background-color: #3b82f6;
@@ -44,20 +36,8 @@ st.markdown("""
         font-weight: 500;
         transition: all 0.2s;
     }
-    .stButton button:hover {
-        background-color: #2563eb;
-        transform: scale(1.02);
-    }
-    /* 标题 */
-    h1, h2, h3 {
-        font-weight: 600;
-        letter-spacing: -0.02em;
-    }
-    /* 侧边栏标题 */
-    .css-1d391kg p, .css-1d391kg h1 {
-        font-weight: 500;
-    }
-    /* Tabs 样式 */
+    .stButton button:hover { background-color: #2563eb; transform: scale(1.02); }
+    h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         background-color: #f1f5f9;
@@ -73,7 +53,6 @@ st.markdown("""
         background-color: white;
         box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     }
-    /* 指标卡片 (KPI) 风格 */
     .metric-card {
         background: white;
         border-radius: 24px;
@@ -82,17 +61,8 @@ st.markdown("""
         border: 1px solid #eef2f6;
         text-align: center;
     }
-    .metric-card h3 {
-        margin: 0;
-        font-size: 2rem;
-        font-weight: 700;
-        color: #1e293b;
-    }
-    .metric-card p {
-        margin: 0;
-        color: #64748b;
-        font-size: 0.9rem;
-    }
+    .metric-card h3 { margin: 0; font-size: 2rem; font-weight: 700; color: #1e293b; }
+    .metric-card p { margin: 0; color: #64748b; font-size: 0.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,7 +114,7 @@ def load_usage_log():
         return pd.DataFrame()
 
 def import_excel_data(uploaded_file):
-    """解析上传的 Excel 并导入 jobs 表 (去重, 保留生产状态)"""
+    """解析上传的 Excel 并导入 jobs 表"""
     df_raw = pd.read_excel(uploaded_file, sheet_name="JobStatusByCust", header=3)
     df_raw.columns = df_raw.columns.str.strip()
     col_map = {
@@ -159,46 +129,36 @@ def import_excel_data(uploaded_file):
     }
     existing_cols = {k: v for k, v in col_map.items() if k in df_raw.columns}
     df = df_raw[list(existing_cols.keys())].rename(columns=existing_cols)
-    
-    # 前向填充合并单元格
     for col in ['part_num', 'revision', 'cust_part_num']:
         if col in df.columns:
             df[col] = df[col].ffill()
-    
     df = df.dropna(subset=['job_num'])
     df = df[df['job_num'] != 'No Job']
-    
-    # 日期列统一转为字符串 (ISO 格式)
     date_cols = ['job_creation_date', 'order_date', 'exwork_date', 'need_by_date',
                  'prev_need_by_date', 'initial_need_by', 'prod_commit_delivery_date']
     for col in date_cols:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
             df[col] = df[col].apply(lambda x: x.isoformat() if pd.notnull(x) else None)
-    
     numeric_cols = ['po_qty', 'balance_qty']
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-    
     existing_jobs = load_jobs()
     if not existing_jobs.empty:
         status_dict = dict(zip(existing_jobs['job_num'], existing_jobs['production_status']))
         df['production_status'] = df['job_num'].map(status_dict).fillna('Not Started')
     else:
         df['production_status'] = 'Not Started'
-    
     for _, row in df.iterrows():
         data = row.to_dict()
         data = {k: (None if pd.isna(v) else v) for k, v in data.items()}
-        # 确保所有日期对象转为字符串
         for key, value in data.items():
             if isinstance(value, (pd.Timestamp, date, datetime)):
                 data[key] = value.isoformat()
             elif isinstance(value, np.generic):
                 data[key] = value.item()
         supabase.table('jobs').upsert(data, on_conflict='job_num').execute()
-    
     st.success("Excel 数据导入/更新成功！")
     st.rerun()
 
@@ -296,7 +256,6 @@ def main():
     df_alloc = load_allocations()
     df_usage = load_usage_log()
 
-    # 顶部 KPI 卡片 (Bento 风格指标)
     if not df_jobs.empty:
         total_jobs = len(df_jobs)
         completed = df_jobs['production_status'].eq('Completed').sum()
@@ -310,7 +269,6 @@ def main():
             st.markdown(f'<div class="metric-card"><h3>{pending}</h3><p>进行中</p></div>', unsafe_allow_html=True)
     st.markdown("---")
 
-    # =========================  Job 进度看板 =========================
     st.header("📋 NPI 项目进度看板")
     if df_jobs.empty:
         st.info("暂无 Job 数据，请使用 Admin 角色导入 Excel 文件。")
@@ -326,7 +284,8 @@ def main():
             'job_num': 'Job编号', 'part_num': '部件号', 'cust_part_num': '客户部件号', 'need_by_date': '需求日期',
             'assign_engineer': '工程师', 'production_status': '生产状态', 'status': '订单状态'
         })
-        st.dataframe(styled.style.applymap(status_color, subset=['生产状态']), use_container_width=True)
+        # 修复：applymap -> map
+        st.dataframe(styled.style.map(status_color, subset=['生产状态']), use_container_width=True)
 
         if role in ["Production (更新生产状态)", "Admin (全部权限)"]:
             st.subheader("✅ 生产完成确认")
@@ -344,7 +303,6 @@ def main():
             fig = px.pie(values=progress.values, names=progress.index, title="整体生产完成进度")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ========================= 物料管理看板 =========================
     st.header("🧾 物料管理看板 (Purchaser & Production)")
     tab1, tab2, tab3, tab4 = st.tabs(["📦 物料库存", "📌 物料分配至 Job", "⚙️ 生产领料", "📜 使用记录"])
 
@@ -358,6 +316,7 @@ def main():
             styled_mat = df_materials[['material_code', 'total_quantity', 'used_quantity', 'remaining_quantity', 'safety_stock', 'unit']].rename(columns={
                 'material_code': '物料代码', 'total_quantity': '总采购', 'used_quantity': '已用', 'remaining_quantity': '剩余', 'safety_stock': '安全库存', 'unit': '单位'
             })
+            # 修复：applymap -> map (这里使用 apply 逐行染色，无需改动)
             st.dataframe(styled_mat.style.apply(color_stock, axis=1), use_container_width=True)
         else:
             st.info("暂无物料数据，请添加新物料。")
