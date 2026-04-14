@@ -63,7 +63,6 @@ st.markdown("""
     }
     .metric-card h3 { margin: 0; font-size: 2rem; font-weight: 700; color: #1e293b; }
     .metric-card p { margin: 0; color: #64748b; font-size: 0.9rem; }
-    /* Job card style */
     .job-card {
         background: white;
         border-radius: 20px;
@@ -129,7 +128,6 @@ def load_jobs():
     try:
         response = supabase.table('jobs').select('*').order('need_by_date').execute()
         df = pd.DataFrame(response.data)
-        # Ensure current_step column exists
         if 'current_step' not in df.columns:
             df['current_step'] = 'Laser Cut'
         return df
@@ -405,44 +403,79 @@ def main():
         }
         st.dataframe(df_display, column_config=column_config, use_container_width=True, height=400)
 
-        # Workflow management (cards with update capability)
+        # Workflow management (cards with filter)
         st.subheader("🔧 Workflow Management (Update Current Step)")
-        st.markdown("Click the **Update Step** button on any job card to change its current step.")
 
-        # Display jobs as cards in a grid
-        jobs_list = df_jobs.to_dict('records')
-        cols_per_row = 3
-        for i in range(0, len(jobs_list), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for idx, col in enumerate(cols):
-                if i + idx < len(jobs_list):
-                    job = jobs_list[i + idx]
-                    job_num = job['job_num']
-                    part_num = job['part_num']
-                    current_step = job.get('current_step', 'Laser Cut')
-                    phase = get_step_phase(current_step)
-                    with col:
-                        with st.container():
-                            st.markdown(f"""
-                            <div class="job-card">
-                                <b>{job_num}</b><br>
-                                <span style="font-size:0.9rem;">Part: {part_num}</span><br>
-                                <span class="step-badge">Phase {phase}</span> <span style="font-weight:500;">{current_step}</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            # Use popover for step update
-                            with st.popover(f"✏️ Update Step for {job_num}"):
-                                st.markdown(f"**Job: {job_num}**")
-                                st.markdown(f"**Current step:** {current_step}")
-                                new_step = st.selectbox("Select new step", WORKFLOW_STEPS, index=WORKFLOW_STEPS.index(current_step), key=f"step_{job_num}")
-                                if st.button("Save", key=f"save_{job_num}"):
-                                    if new_step != current_step:
-                                        update_job_step(job_num, new_step)
-                                        st.success(f"Step updated to {new_step}")
-                                        st.cache_data.clear()
-                                        st.rerun()
-                                    else:
-                                        st.info("No change.")
+        # ---- Filtering section ----
+        st.markdown("**Filter jobs:**")
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        with col_f1:
+            search_job = st.text_input("🔍 Job Number contains", "")
+        with col_f2:
+            search_part = st.text_input("🔍 Part Number contains", "")
+        with col_f3:
+            status_filter = st.selectbox("📌 Production Status", ["All", "Not Started", "In Progress", "Completed"])
+        with col_f4:
+            step_filter = st.selectbox("⚙️ Current Step", ["All"] + WORKFLOW_STEPS)
+
+        # Apply filters
+        filtered_jobs = df_jobs.copy()
+        if search_job:
+            filtered_jobs = filtered_jobs[filtered_jobs['job_num'].str.contains(search_job, case=False, na=False)]
+        if search_part:
+            filtered_jobs = filtered_jobs[filtered_jobs['part_num'].str.contains(search_part, case=False, na=False)]
+        if status_filter != "All":
+            if status_filter == "Not Started":
+                filtered_jobs = filtered_jobs[filtered_jobs['production_status'] == 'Not Started']
+            elif status_filter == "In Progress":
+                filtered_jobs = filtered_jobs[filtered_jobs['production_status'].isin(['Not Started', 'In Progress'])]  # 未完成即为进行中
+            else:  # Completed
+                filtered_jobs = filtered_jobs[filtered_jobs['production_status'] == 'Completed']
+        if step_filter != "All":
+            filtered_jobs = filtered_jobs[filtered_jobs['current_step'] == step_filter]
+
+        # Option to show only incomplete jobs by default
+        show_only_incomplete = st.checkbox("Show only incomplete jobs (exclude Completed)", value=True)
+        if show_only_incomplete:
+            filtered_jobs = filtered_jobs[filtered_jobs['production_status'] != 'Completed']
+
+        st.caption(f"Showing {len(filtered_jobs)} job(s)")
+
+        if filtered_jobs.empty:
+            st.info("No jobs match the filters.")
+        else:
+            jobs_list = filtered_jobs.to_dict('records')
+            cols_per_row = 3
+            for i in range(0, len(jobs_list), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for idx, col in enumerate(cols):
+                    if i + idx < len(jobs_list):
+                        job = jobs_list[i + idx]
+                        job_num = job['job_num']
+                        part_num = job['part_num']
+                        current_step = job.get('current_step', 'Laser Cut')
+                        phase = get_step_phase(current_step)
+                        with col:
+                            with st.container():
+                                st.markdown(f"""
+                                <div class="job-card">
+                                    <b>{job_num}</b><br>
+                                    <span style="font-size:0.9rem;">Part: {part_num}</span><br>
+                                    <span class="step-badge">Phase {phase}</span> <span style="font-weight:500;">{current_step}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                with st.popover(f"✏️ Update Step for {job_num}"):
+                                    st.markdown(f"**Job: {job_num}**")
+                                    st.markdown(f"**Current step:** {current_step}")
+                                    new_step = st.selectbox("Select new step", WORKFLOW_STEPS, index=WORKFLOW_STEPS.index(current_step), key=f"step_{job_num}")
+                                    if st.button("Save", key=f"save_{job_num}"):
+                                        if new_step != current_step:
+                                            update_job_step(job_num, new_step)
+                                            st.success(f"Step updated to {new_step}")
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                        else:
+                                            st.info("No change.")
 
         # Production completion section
         if role in ["Production (Update Status)", "Admin (Full Access)"]:
